@@ -136,3 +136,8 @@ TURN_CREDENTIAL_TTL = int(os.getenv("TURN_CREDENTIAL_TTL", "86400"))
 # OSS Email/Password Auth
 OSS_JWT_SECRET = os.getenv("OSS_JWT_SECRET", "change-me-in-production")
 OSS_JWT_EXPIRY_HOURS = int(os.getenv("OSS_JWT_EXPIRY_HOURS", "720"))  # 30 days
+
+# AgentMail — transactional email for password resets
+AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY")
+AGENTMAIL_INBOX_ID = os.getenv("AGENTMAIL_INBOX_ID")
+PASSWORD_RESET_TOKEN_EXPIRY_HOURS = int(os.getenv("PASSWORD_RESET_TOKEN_EXPIRY_HOURS", "1"))

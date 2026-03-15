@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timezone
 
@@ -6,7 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
-from api.db.models import UserConfigurationModel, UserModel
+from api.db.models import PasswordResetTokenModel, UserConfigurationModel, UserModel
 from api.schemas.user_configuration import UserConfiguration
 
 
@@ -181,3 +182,54 @@ class UserClient(BaseDBClient):
             await session.commit()
             await session.refresh(user)
             return user
+
+    async def create_password_reset_token(
+        self, user_id: int, token_hash: str, expires_at: datetime
+    ) -> PasswordResetTokenModel:
+        """Store a hashed password-reset token."""
+        async with self.async_session() as session:
+            token = PasswordResetTokenModel(
+                user_id=user_id,
+                token_hash=token_hash,
+                expires_at=expires_at,
+            )
+            session.add(token)
+            await session.commit()
+            await session.refresh(token)
+            return token
+
+    async def get_password_reset_token(self, token_hash: str) -> PasswordResetTokenModel | None:
+        """Look up a reset token by its SHA-256 hash."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(PasswordResetTokenModel).where(
+                    PasswordResetTokenModel.token_hash == token_hash
+                )
+            )
+            return result.scalars().first()
+
+    async def consume_password_reset_token(self, token_id: int) -> None:
+        """Mark a reset token as used so it cannot be reused."""
+        async with self.async_session() as session:
+            from sqlalchemy import update
+
+            stmt = (
+                update(PasswordResetTokenModel)
+                .where(PasswordResetTokenModel.id == token_id)
+                .values(used_at=datetime.now(timezone.utc))
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def update_user_password_hash(self, user_id: int, password_hash: str) -> None:
+        """Replace the stored bcrypt hash for a user."""
+        async with self.async_session() as session:
+            from sqlalchemy import update
+
+            stmt = (
+                update(UserModel)
+                .where(UserModel.id == user_id)
+                .values(password_hash=password_hash)
+            )
+            await session.execute(stmt)
+            await session.commit()

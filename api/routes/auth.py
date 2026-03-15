@@ -1,10 +1,23 @@
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 
+from api.constants import PASSWORD_RESET_TOKEN_EXPIRY_HOURS
 from api.db import db_client
 from api.db.models import UserModel
-from api.schemas.auth import AuthResponse, LoginRequest, SignupRequest, UserResponse
+from api.schemas.auth import (
+    AuthResponse,
+    ForgotPasswordRequest,
+    LoginRequest,
+    ResetPasswordRequest,
+    SignupRequest,
+    UserResponse,
+)
 from api.services.auth.depends import create_user_configuration_with_mps_key, get_user
+from api.services.email_service import send_password_reset_email
 from api.utils.auth import create_jwt_token, hash_password, verify_password
 
 router = APIRouter(
@@ -95,3 +108,48 @@ async def get_current_user(user: UserModel = Depends(get_user)):
         email=user.email,
         organization_id=user.selected_organization_id,
     )
+
+
+@router.post("/forgot-password", status_code=200)
+async def forgot_password(request: ForgotPasswordRequest):
+    """Initiate a password reset. Always returns 200 to avoid leaking registered emails."""
+    user = await db_client.get_user_by_email(request.email)
+    if not user or not user.password_hash:
+        # Return success regardless so attackers cannot enumerate accounts
+        return {"message": "If that email is registered, a reset link has been sent."}
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
+
+    await db_client.create_password_reset_token(user.id, token_hash, expires_at)
+
+    try:
+        await send_password_reset_email(user.email, raw_token)
+    except Exception:
+        logger.exception("Failed to send password-reset email for user %s", user.id)
+        raise HTTPException(status_code=500, detail="Failed to send reset email. Please try again.")
+
+    return {"message": "If that email is registered, a reset link has been sent."}
+
+
+@router.post("/reset-password", status_code=200)
+async def reset_password(request: ResetPasswordRequest):
+    """Validate a reset token and update the user's password."""
+    token_hash = hashlib.sha256(request.token.encode()).hexdigest()
+    token_record = await db_client.get_password_reset_token(token_hash)
+
+    if not token_record:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
+
+    if token_record.used_at is not None:
+        raise HTTPException(status_code=400, detail="This reset link has already been used.")
+
+    if datetime.now(timezone.utc) > token_record.expires_at:
+        raise HTTPException(status_code=400, detail="This reset link has expired.")
+
+    new_hash = hash_password(request.password)
+    await db_client.update_user_password_hash(token_record.user_id, new_hash)
+    await db_client.consume_password_reset_token(token_record.id)
+
+    return {"message": "Password updated successfully."}
